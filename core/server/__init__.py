@@ -15,11 +15,19 @@
 """
 
 from core.server.state import console
-from core.logger import get_logger, setup_logger
+from core.logger import get_logger, prune_logs, setup_logger
 from config_server import ServerConfig as Config, __version__
 
 setup_logger('server', level=Config.log_level)
 logger = get_logger('server')
+
+# 清理过期日志，只保留最近 N 天
+try:
+    removed = prune_logs(Config.log_keep_days)
+    if removed:
+        logger.info(f'已清理 {removed} 个过期日志文件（保留 {Config.log_keep_days} 天）')
+except Exception as e:
+    logger.debug(f'清理过期日志时发生错误: {e}')
 
 from core.server.schema import Task, Result
 

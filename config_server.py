@@ -24,6 +24,7 @@ class ServerConfig:
 
     # 日志配置
     log_level = 'DEBUG'        # 日志级别：'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'
+    log_keep_days = 1          # 日志保留天数，1=只保留今天；启动时自动删除更早的 logs/*.log
     aligner_idle_timeout = 10  # 对齐引擎空闲多少秒后自动释放显存 (0 表示不释放)
 
     # GPU 预加速配置（有识别任务时，提前调高显存频率，降低延迟，需管理员权限运行）

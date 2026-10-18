@@ -52,6 +52,8 @@ class ClientConfig:
 
     save_audio = True           # 是否保存录音文件
     audio_name_len = 20         # 将录音识别结果的前多少个字存储到录音文件名中，建议不要超过200
+
+    log_keep_days = 1           # 日志保留天数，1=只保留今天；启动时自动删除更早的 logs/*.log
     
     context = ''                # 提示词上下文，用于辅助 Fun-ASR-Nano 模型识别（例如输入人名、地名、专业术语等）
     language = 'auto'           # 识别语言：'auto', 'chinese', 'english', 'japanese' 等（各引擎支持范围不同）

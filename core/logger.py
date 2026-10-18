@@ -1,17 +1,74 @@
 # coding: utf-8
 
 import os
+import re
 import logging
 from pathlib import Path
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from rich.logging import RichHandler
 
 
+# 按天滚动出来的日志文件名形如 client_2026-10-18.log
+_DATED_LOG_RE = re.compile(r'^(?P<stem>.+)_(?P<date>\d{4}-\d{2}-\d{2})\.log$')
+
+
 class TruncatingFileHandler(RotatingFileHandler):
-    """超过 maxBytes 后 truncate 文件，不保留任何备份文件"""
+    """
+    超过 maxBytes 后 truncate 文件，不保留任何备份文件
+
+    另外在跨天时把当天日志重命名归档为 {name}_{YYYY-MM-DD}.log，
+    这样"只保留最近 N 天"才有可依据的按天文件。
+    """
 
     _TAIL_LINES = 10  # truncate 前保留的末尾行数
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._current_day = None
+
+    def emit(self, record):
+        # 跨天检查：同一天内不会重复调用 date 计算，几乎零开销
+        day = date.fromtimestamp(record.created)
+        if day != self._current_day:
+            self._current_day = day
+            self._rollover_by_date(day)
+        super().emit(record)
+
+    def _rollover_by_date(self, today: date) -> None:
+        """把昨天及更早的日志内容归档成带日期的文件，新的一天从头写"""
+        try:
+            if not os.path.exists(self.baseFilename):
+                return
+            last_day = date.fromtimestamp(os.path.getmtime(self.baseFilename))
+            if last_day >= today:
+                return  # 已经是今天的文件，无需归档
+
+            stem = os.path.splitext(self.baseFilename)[0]
+            # 归档名要与 prune_logs 的 {name}_{YYYY-MM-DD}.log 规则对齐，
+            # 否则归档出来的文件永远匹配不上、也就永远不会被清理
+            if stem.endswith('_latest'):
+                stem = stem[:-len('_latest')]
+            target = f'{stem}_{last_day.isoformat()}.log'
+
+            if self.stream:
+                self.stream.close()
+                self.stream = None
+            os.replace(self.baseFilename, target)
+
+            self.stream = open(self.baseFilename, 'w', encoding=self.encoding)
+            self.stream.write(f'--- Log started {datetime.now()}\n')
+            self.stream.flush()
+        except Exception:
+            # 归档失败不能影响日志写入，退化为清空重开
+            try:
+                if self.stream:
+                    self.stream.close()
+                    self.stream = None
+                self.stream = open(self.baseFilename, 'w', encoding=self.encoding)
+                self.stream.flush()
+            except Exception:
+                pass
 
     def doRollover(self):
         # truncate 前先读旧文件末尾几行
@@ -134,6 +191,50 @@ class Logger:
             return cls.setup(name, level='INFO')
         return cls._loggers[name]
 
+    @classmethod
+    def prune_logs(cls, keep_days: int = 1, log_dir: str = None) -> int:
+        """
+        删除过期日志，只保留最近 keep_days 天的
+
+        处理两类文件：
+        - {name}_{YYYY-MM-DD}.log  按天归档的，直接按文件名日期判断
+        - {name}_latest.log        当天正在写的，保留不动
+
+        Args:
+            keep_days: 保留天数，1 表示只留今天
+            log_dir: 日志目录，默认为项目根目录下的 logs
+
+        Returns:
+            删除的文件数量
+        """
+        keep_days = max(1, int(keep_days))
+        cutoff = date.today() - timedelta(days=keep_days - 1)
+
+        if log_dir is None:
+            from config_client import BASE_DIR
+            log_dir = os.path.join(BASE_DIR, 'logs')
+
+        log_path = Path(log_dir)
+        if not log_path.is_dir():
+            return 0
+
+        removed = 0
+        for log_file in log_path.glob('*.log'):
+            m = _DATED_LOG_RE.match(log_file.name)
+            if not m:
+                continue  # _latest.log 等非日期文件不处理
+            try:
+                file_day = date.fromisoformat(m.group('date'))
+            except ValueError:
+                continue
+            if file_day < cutoff:
+                try:
+                    log_file.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+        return removed
+
 
 # 便捷函数
 def setup_logger(name: str, log_dir: str = None, level: str = 'INFO', **kwargs):
@@ -144,3 +245,8 @@ def setup_logger(name: str, log_dir: str = None, level: str = 'INFO', **kwargs):
 def get_logger(name: str):
     """获取日志记录器的便捷函数"""
     return Logger.get_logger(name)
+
+
+def prune_logs(keep_days: int = 1, log_dir: str = None) -> int:
+    """清理过期日志的便捷函数"""
+    return Logger.prune_logs(keep_days, log_dir)
