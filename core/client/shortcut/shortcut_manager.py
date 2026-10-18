@@ -55,6 +55,16 @@ class ShortcutManager:
         # 快捷键任务映射（key -> ShortcutTask）
         self.tasks: Dict[str, ShortcutTask] = {}
 
+        # ---- 组合键支持 ----
+        # _combo_index: 组成键名 -> 参与该组合的快捷键字符串列表
+        #   例如 {'ctrl_l': ['ctrl_l+cmd_l', 'ctrl_l+alt_l']}
+        self._combo_index: Dict[str, List[str]] = {}
+        # _pressed_keys: 当前处于按下状态的按键名集合
+        self._pressed_keys = set()
+        # _combo_pressed: 组合键 -> 本次按下周期是否已触发
+        #   防止按住不放时，持续的 KEYDOWN_REPEAT 重复触发
+        self._combo_pressed: Dict[str, bool] = {}
+
         # 线程池
         self._pool = ThreadPoolExecutor(max_workers=4)
 
@@ -89,6 +99,62 @@ class ShortcutManager:
             task.threshold = shortcut.get_threshold(Config.threshold)
             self.tasks[shortcut.key] = task
 
+            # 组合键（形如 'ctrl_l+cmd_l'）建立反向索引，
+            # 使任意一个组成键按下时都能反查到所属组合
+            if '+' in shortcut.key:
+                for k in shortcut.key.split('+'):
+                    k = k.strip()
+                    if k:
+                        self._combo_index.setdefault(k, []).append(shortcut.key)
+
+    @staticmethod
+    def _combo_keys(combo: str) -> List[str]:
+        """拆分组合键字符串为组成键列表"""
+        return [k.strip() for k in combo.split('+') if k.strip()]
+
+    def _match_combos(self, key_name: str, is_down: bool) -> bool:
+        """
+        匹配并派发组合键事件
+
+        Args:
+            key_name: 当前事件的按键名
+            is_down: True=按下事件, False=释放事件
+
+        Returns:
+            True 表示该按键参与了某个组合键（已由组合逻辑处理）
+
+        触发条件：组合键的所有组成键都处于按下状态时，在最后一个键按下
+        的那一刻触发；任意组成键释放时，视为快捷键释放。
+        """
+        combos = self._combo_index.get(key_name)
+        if not combos:
+            return False
+
+        handled = False
+        for combo in combos:
+            task = self.tasks.get(combo)
+            if task is None:
+                continue
+            handled = True
+
+            if is_down:
+                self._pressed_keys.add(key_name)
+                keys = self._combo_keys(combo)
+                if all(k in self._pressed_keys for k in keys):
+                    # 防止按住不放时 KEYDOWN_REPEAT 重复触发
+                    if not self._combo_pressed.get(combo):
+                        self._combo_pressed[combo] = True
+                        self._event_handler.handle_keydown(combo, task)
+            else:
+                self._pressed_keys.discard(key_name)
+                # 任意组成键释放即视为释放。重复释放由 handle_keyup
+                # 内部的 is_recording / pressed 判空保护，不会重复结束录音。
+                if self._combo_pressed.get(combo):
+                    self._combo_pressed[combo] = False
+                    self._event_handler.handle_keyup(combo, task)
+
+        return handled
+
     # ========== 监听器创建 ==========
 
     def create_keyboard_filter(self):
@@ -107,6 +173,10 @@ class ShortcutManager:
                 return True
 
             # 查找匹配的快捷键
+            # 先尝试组合键（如 ctrl_l+cmd_l）：参与组合的按键优先由组合逻辑处理
+            if self._match_combos(key_name, msg in KEY_DOWN_MESSAGES):
+                return True
+
             if key_name not in self.tasks:
                 return True
 
