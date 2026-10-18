@@ -73,6 +73,12 @@ class CapsWriterClient:
         self.output = TextOutput()
         self.diary = DiaryWriter(base_path=self.base_dir)
 
+        # 启动时清理过期的日记与音频，只保留最近 N 天
+        try:
+            self.diary.prune(Config.diary_keep_days)
+        except Exception as e:
+            logger.warning(f"清理过期日记时发生错误: {e}")
+
         # 初始化各管理器
         self.ws = WebSocketManager(self)
         self.tray = TrayManager(self)

@@ -7,7 +7,10 @@
 
 from __future__ import annotations
 
+import re
+import shutil
 import time
+from datetime import date, datetime, timedelta
 from os import makedirs
 from pathlib import Path
 from typing import Optional, List
@@ -48,6 +51,84 @@ class DiaryWriter:
             base_path: 基础路径，默认为当前目录
         """
         self.base_path = base_path or Path()
+
+    # ---------- 过期数据清理 ----------
+
+    _AUDIO_NAME_RE = re.compile(r'(\d{8})-\d{6}')
+    _AUDIO_EXTS = {'.mp3', '.wav', '.m4a', '.ogg', '.flac'}
+
+    def prune(self, keep_days: int = 1) -> int:
+        """
+        清理过期的日记与音频文件
+
+        在每次客户端启动时调用，保证磁盘上只留最近若干天的内容。
+        keep_days=1 表示只保留今天。
+
+        Args:
+            keep_days: 保留天数，1 表示只保留今天
+
+        Returns:
+            删除的文件数量
+        """
+        keep_days = max(1, int(keep_days))
+        cutoff = date.today() - timedelta(days=keep_days - 1)
+        removed = 0
+
+        if not self.base_path.is_dir():
+            return 0
+
+        for year_dir in self.base_path.iterdir():
+            if not year_dir.is_dir() or not year_dir.name.isdigit():
+                continue
+            for month_dir in year_dir.iterdir():
+                if not month_dir.is_dir() or not month_dir.name.isdigit():
+                    continue
+
+                removed += self._prune_month(month_dir, cutoff)
+
+                # 空目录一并清掉
+                if not any(month_dir.iterdir()):
+                    month_dir.rmdir()
+                if not any(year_dir.iterdir()):
+                    year_dir.rmdir()
+
+        if removed:
+            logger.info(f'已清理 {removed} 个过期文件（保留 {keep_days} 天）')
+        return removed
+
+    def _prune_month(self, month_dir: Path, cutoff: date) -> int:
+        """清理单个月份目录下的过期文件"""
+        removed = 0
+
+        for md_file in month_dir.glob('*.md'):
+            try:
+                day = int(md_file.stem)
+                file_date = date(int(month_dir.parent.name), int(month_dir.name), day)
+            except (ValueError, TypeError):
+                continue  # 名字不是日期，保留
+            if file_date < cutoff:
+                md_file.unlink(missing_ok=True)
+                removed += 1
+
+        assets = month_dir / 'assets'
+        if assets.is_dir():
+            for audio in assets.iterdir():
+                if audio.suffix.lower() not in self._AUDIO_EXTS:
+                    continue
+                m = self._AUDIO_NAME_RE.search(audio.name)
+                if not m:
+                    continue
+                try:
+                    file_date = datetime.strptime(m.group(1), '%Y%m%d').date()
+                except ValueError:
+                    continue
+                if file_date < cutoff:
+                    audio.unlink(missing_ok=True)
+                    removed += 1
+            if not any(assets.iterdir()):
+                assets.rmdir()
+
+        return removed
     
     def write(
         self,

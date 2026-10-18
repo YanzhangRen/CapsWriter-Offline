@@ -42,6 +42,60 @@ _TASKKILL = str(
     Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'taskkill.exe'
 )
 
+# GetExtendedTcpTable 实际返回的表结构（实测得出，与 MSDN 的 MIB_TCPROW 不一致）：
+#   前 4 字节表头，之后每 20 字节一行 = state / localAddr / localPort / remoteAddr / remotePort
+_TCP_TABLE_PREFIX = 4
+_TCP_ROW_SIZE = 20
+_TCP_STATE_LISTEN = 2
+_AF_INET = 2
+_TCP_TABLE_OWNER_PID_LISTENER = 2
+_ERROR_INSUFFICIENT_BUFFER = 122
+
+
+def _swap16(value: int) -> int:
+    """dwLocalPort 是网络字节序，交换低 16 位字节才是真实端口"""
+    return ((value & 0xFF) << 8) | ((value >> 8) & 0xFF)
+
+
+def _port_listening_win(port: int) -> Optional[bool]:
+    """
+    查系统 TCP 表判断端口是否处于 LISTEN，不产生任何网络流量。
+
+    返回 True/False 表示判断结果；返回 None 表示表格解析不出来，调用方应回退。
+    """
+    try:
+        get_table = ctypes.WinDLL('iphlpapi.dll').GetExtendedTcpTable
+        get_table.restype = ctypes.c_ulong
+
+        size = ctypes.c_ulong(0)
+        # 首次调用只为拿表的大小，按惯例必然返回 ERROR_INSUFFICIENT_BUFFER
+        if get_table(None, ctypes.byref(size), 0, _AF_INET,
+                     _TCP_TABLE_OWNER_PID_LISTENER, 0) != _ERROR_INSUFFICIENT_BUFFER:
+            return None
+
+        buf = ctypes.create_string_buffer(size.value)
+        if get_table(buf, ctypes.byref(size), 0, _AF_INET,
+                     _TCP_TABLE_OWNER_PID_LISTENER, 0) != 0:
+            return None
+
+        data = buf.raw
+        offset = _TCP_TABLE_PREFIX
+        rows = 0
+        while offset + _TCP_ROW_SIZE <= len(data):
+            state = int.from_bytes(data[offset:offset + 4], 'little')
+            if state == _TCP_STATE_LISTEN:
+                rows += 1
+                local_port = int.from_bytes(data[offset + 8:offset + 12], 'little')
+                if _swap16(local_port) == port:
+                    return True
+            offset += _TCP_ROW_SIZE
+
+        if rows == 0:
+            return None  # 一条 LISTEN 都没解析出来，多半是表结构变了，交给调用方回退
+        return False
+    except Exception:
+        return None
+
 
 class ServerGuard:
     """
@@ -66,7 +120,23 @@ class ServerGuard:
     # ---------- 内部工具 ----------
 
     def _port_open(self) -> bool:
-        """探测服务端端口是否可连接"""
+        """
+        判断服务端端口是否处于 LISTEN 状态。
+
+        刻意不用 connect_ex 试连：那样服务端会收到"连上就断、零字节"的连接，
+        websockets 每次都打印一整段 opening handshake failed 堆栈。巡检每
+        3 秒一次、每条十几行堆栈，控制台会被彻底淹没，真正的报错反而看不见了。
+        这里直接读系统 TCP 表，一个包都不发。
+        """
+        if sys.platform.startswith('win'):
+            result = _port_listening_win(self.port)
+            if result is not None:
+                return result
+            logger.debug("TCP 表解析失败，本次回退到试连探测")
+        return self._port_connectable()
+
+    def _port_connectable(self) -> bool:
+        """兜底：直接试连一次（非 Windows 平台也走这里）"""
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
                 sock.settimeout(0.5)

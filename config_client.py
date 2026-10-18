@@ -50,9 +50,10 @@ class ClientConfig:
 
     enter_apps   = [('happ.exe', 0.5), ('hexin.exe', 0.5)]  # (应用名, 延迟秒数) 输出完成后自动回车，如同花顺，输入股票名后，需要回车才能切换
 
-    save_audio = True           # 是否保存录音文件
+    save_audio = False          # 是否保存录音文件（False=不落盘，不占硬盘）
     audio_name_len = 20         # 将录音识别结果的前多少个字存储到录音文件名中，建议不要超过200
 
+    diary_keep_days = 1         # 日记/音频保留天数，1=只保留今天；客户端每次启动时自动删除更早的
     log_keep_days = 1           # 日志保留天数，1=只保留今天；启动时自动删除更早的 logs/*.log
     
     context = ''                # 提示词上下文，用于辅助 Fun-ASR-Nano 模型识别（例如输入人名、地名、专业术语等）
