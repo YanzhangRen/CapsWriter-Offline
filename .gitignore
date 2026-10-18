@@ -1,6 +1,8 @@
 # 模型文件（数 GB，不入库）
 models/
-LLM/
+# 顶层 LLM/ 放的是用户自建的提示词角色文件，不入库
+# 注意必须写成 /LLM/，否则会连 core/client/llm/ 这个应用源码目录一起误伤
+/LLM/
 
 # 打包的 Python 运行时（数十万文件）
 internal/
