@@ -94,6 +94,13 @@ class CapsWriterClient:
         # 2. 托盘资源
         self.tray.stop()
 
+        # 2.1 录音状态悬浮提示
+        try:
+            from .ui.recording_indicator import stop_recording_indicator
+            stop_recording_indicator()
+        except Exception as e:
+            logger.debug(f"停止录音指示器时发生错误: {e}")
+
         # 3. 关闭监控
         self.hotword.stop()
         self.llm.stop()

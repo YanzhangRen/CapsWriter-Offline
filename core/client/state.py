@@ -23,6 +23,7 @@ from rich.console import Console
 from rich.theme import Theme
 
 from . import logger
+from config_client import ClientConfig as Config
 
 
 # 配置 Rich console
@@ -102,6 +103,14 @@ class ClientState:
         self.recording = False
         self.recording_start_time = 0.0
         self.audio_files.clear()
+
+        # 隐藏屏幕底部悬浮提示
+        if Config.show_recording_indicator:
+            try:
+                from .ui.recording_indicator import hide_recording_indicator
+                hide_recording_indicator()
+            except Exception as e:
+                logger.debug(f"隐藏录音指示器失败: {e}")
         
         logger.debug("客户端状态重置完成")
     
@@ -115,6 +124,14 @@ class ClientState:
         self.recording = True
         self.recording_start_time = start_time
         logger.debug(f"录音状态已更新: recording=True, start_time={start_time:.2f}")
+
+        # 屏幕底部悬浮提示（仅录音时显示）
+        if Config.show_recording_indicator:
+            try:
+                from .ui.recording_indicator import show_recording_indicator
+                show_recording_indicator()
+            except Exception as e:
+                logger.debug(f"启动录音指示器失败: {e}")
     
     def stop_recording(self) -> float:
         """
@@ -130,6 +147,15 @@ class ClientState:
         self.recording = False
         self.recording_start_time = 0.0
         logger.debug(f"录音状态已更新: recording=False, duration={duration:.2f}s")
+
+        # 隐藏屏幕底部悬浮提示
+        if Config.show_recording_indicator:
+            try:
+                from .ui.recording_indicator import hide_recording_indicator
+                hide_recording_indicator()
+            except Exception as e:
+                logger.debug(f"隐藏录音指示器失败: {e}")
+
         return duration
     
     @property
