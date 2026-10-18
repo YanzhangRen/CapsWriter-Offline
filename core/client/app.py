@@ -32,6 +32,7 @@ from .hotword.manager import HotwordManager
 from .llm.llm_handler import LLMHandler
 from .output.text_output import TextOutput
 from .diary.diary_writer import DiaryWriter
+from .server_guard import ServerGuard
 from core.tools.empty_working_set import empty_current_working_set
 from platform import system
 
@@ -52,6 +53,10 @@ class CapsWriterClient:
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
             
+        # 服务端守护：缺服务端自动拉起，关任意一方另一方一起关
+        self.server_guard = ServerGuard(self)
+        self.server_guard.start()
+
         # 初始化状态容器
         self.state = ClientState(app=self)
 
@@ -113,6 +118,12 @@ class CapsWriterClient:
             self.state.reset()
         except Exception as e:
             logger.warning(f"重置状态时发生错误: {e}")
+
+        # 5.1 一并关闭服务端（客户端与服务端绑定）
+        try:
+            self.server_guard.stop()
+        except Exception as e:
+            logger.warning(f"关闭服务端时发生错误: {e}")
 
         # 6. 停止事件循环（最后一步，确保前面的异步操作已调度）
         self.loop.stop()

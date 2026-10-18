@@ -71,6 +71,7 @@ class ResultProcessor:
         self.app = app
         self._exit_event = asyncio.Event()
         self._loop = asyncio.get_running_loop()  # 保存事件循环引用
+        self._disconnect_notified = False         # 同一次断线只提示一次
 
     @property
     def state(self) -> ClientState:
@@ -175,13 +176,27 @@ class ResultProcessor:
                     break
 
             console.print(f'[bold red]已断开服务端连接[/bold red]\n')
+            self._notify_disconnect()
             self._cleanup()
             
+
+    def _notify_disconnect(self) -> None:
+        """连接断开时弹屏幕提示，避免用户对着一个连不上的客户端干等"""
+        if self._disconnect_notified:
+            return  # 同一次断线只提示一次，重连循环不重复刷屏
+        self._disconnect_notified = True
+        try:
+            from core.client.ui import toast
+            toast('服务端已断开，正在重连', font_size=12, bg='#3C3C3C', duration=2500)
+        except Exception as e:
+            logger.debug(f"弹出断线提示失败: {e}")
 
     async def _handle_message(self, message: Optional[RecognitionMessage]) -> None:
         """处理接收到的消息"""
         if message is None:
             return
+
+        self._disconnect_notified = False  # 已恢复，下次断线可以再提示
 
 
         # 使用 text 字段（简单拼接结果，用于语音输入）

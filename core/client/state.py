@@ -161,12 +161,19 @@ class ClientState:
     @property
     def is_connected(self) -> bool:
         """检查 WebSocket 是否已连接"""
-        if self.websocket is None:
+        ws = self.websocket
+        if ws is None:
             return False
+        # websockets >= 14 已移除 .closed 属性，改用 state 枚举表示连接状态。
+        # 旧代码在此 AttributeError 后直接返回 True，导致服务端已关闭时
+        # 客户端仍自认为在线，录音被静默丢弃且没有任何提示。
+        state = getattr(ws, 'state', None)
+        if state is not None:
+            return getattr(state, 'name', str(state)) == 'OPEN'
         try:
-            return not self.websocket.closed
+            return not ws.closed
         except AttributeError:
-            return self.websocket is not None
+            return False
     
     def register_audio_file(self, task_id: str, file_path: Path) -> None:
         """
