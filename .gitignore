@@ -1,0 +1,29 @@
+# 模型文件（数 GB，不入库）
+models/
+LLM/
+
+# 打包的 Python 运行时（数十万文件）
+internal/
+
+# 运行产物
+logs/
+assets/
+2026/
+docs/
+
+# 可执行文件
+*.exe
+*.dll
+*.pyd
+
+# 录音与临时文件
+*.wav
+*.mp3
+*.tmp
+
+# 编辑器
+.idea/
+.vscode/
+__pycache__/
+*.pyc
+*.bak
