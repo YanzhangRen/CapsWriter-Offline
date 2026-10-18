@@ -17,7 +17,8 @@ class ClientConfig:
     # 快捷键配置列表
     shortcuts = [
         {
-            'key': 'ctrl_l+cmd_l',  # 监听 左Ctrl + 左Win 组合键
+            'key': 'ctrl_l+cmd',    # 监听 左Ctrl + 左Win 组合键
+                                   # 注意：左Win 键在 pynput 中的名称是 cmd，不是 cmd_l
             'type': 'keyboard',     # 是键盘快捷键
             'suppress': False,      # 组合键不能阻塞（否则 Ctrl/Alt/Win 单键失效）
             'hold_mode': True,      # 长按模式：按住说话，松开转文字
