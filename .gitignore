@@ -21,6 +21,9 @@ docs/
 *.mp3
 *.tmp
 
+# 自动生成的热词库（由 hotword_generate_nb.py 生成，无需入库）
+core/client/hotword/stocks.txt
+
 # 编辑器
 .idea/
 .vscode/
