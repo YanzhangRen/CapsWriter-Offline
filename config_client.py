@@ -17,10 +17,19 @@ class ClientConfig:
     # 快捷键配置列表
     shortcuts = [
         {
-            'key': 'caps_lock',     # 监听大写锁定键
+            'key': 'ctrl_l+cmd_l',  # 监听 左Ctrl + 左Win 组合键
             'type': 'keyboard',     # 是键盘快捷键
-            'suppress': True,      # 阻塞按键（短按会补发）
-            'hold_mode': True,      # 长按模式
+            'suppress': False,      # 组合键不能阻塞（否则 Ctrl/Alt/Win 单键失效）
+            'hold_mode': True,      # 长按模式：按住说话，松开转文字
+            'threshold': 0.4,       # 组合键按下耗时低于此值视为误触
+            'enabled': True         # 启用此快捷键
+        },
+        {
+            'key': 'ctrl_l+alt_l',  # 监听 左Ctrl + 左Alt 组合键
+            'type': 'keyboard',     # 是键盘快捷键
+            'suppress': False,      # 组合键不能阻塞
+            'hold_mode': False,     # 单击模式：按一下开始录，再按一下停止
+            'threshold': 0.6,       # 需 0.6s 内完成"按下-松开"才算单击
             'enabled': True         # 启用此快捷键
         },
         {
