@@ -15,6 +15,11 @@ core.ui.set_ui_logger(logger)
 
 # 2. 导出客户端特有的 UI 组件
 from core.client.ui.tips import TipsDisplay
+from core.client.ui.recording_indicator import (
+    show_recording_indicator,
+    hide_recording_indicator,
+    stop_recording_indicator,
+)
 
 # 3. 重新导出通用 UI 组件 (Re-export)
 # 这样客户端其他模块只需 from core.client.ui import ... 即可
@@ -35,6 +40,9 @@ from core.ui.context_menu_handler import on_edit_context
 __all__ = [
     'logger',
     'TipsDisplay',
+    'show_recording_indicator',
+    'hide_recording_indicator',
+    'stop_recording_indicator',
     'toast',
     'toast_stream',
     'ToastMessage',

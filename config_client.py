@@ -73,6 +73,8 @@ class ClientConfig:
 
     enable_tray = True          # 客户端默认启用托盘图标功能
 
+    show_recording_indicator = True   # 录音时在屏幕底部正中央显示悬浮"录音中"提示，停止后隐藏
+
     # 日志配置
     log_level = 'DEBUG'          # 日志级别：'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'
 
