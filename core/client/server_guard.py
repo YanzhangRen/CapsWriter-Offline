@@ -180,9 +180,18 @@ class ServerGuard:
         console.print('[yellow]未检测到服务端，正在自动启动，请稍候...[/yellow]\n')
         try:
             # CREATE_NEW_PROCESS_GROUP: 让 Ctrl+C 只作用于客户端，不误杀服务端
+            # 不加 CREATE_NO_WINDOW: 服务端要跟客户端共用控制台，日志混在一起看。
+            env = os.environ.copy()
+            # 控制台的状态行只能有一个主人：
+            #   浮窗开着  -> 客户端不画控制台动画，服务端画"正在接收音频"
+            #   浮窗关掉  -> 客户端接管控制台画"开始录音"，服务端让位
+            # 两边都画的话，两个 Rich Live 抢同一行互相覆盖，底部一直闪。
+            if not Config.show_recording_indicator:
+                env['CAPSWRITER_NO_CONSOLE_STATUS'] = '1'
             subprocess.Popen(
                 [str(exe)],
                 cwd=str(exe.parent),
+                env=env,
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
             )
         except Exception as e:

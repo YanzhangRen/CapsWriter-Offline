@@ -6,6 +6,7 @@ WebSocket 接收处理模块
 """
 
 import json
+import os
 import time
 from base64 import b64decode
 
@@ -20,8 +21,29 @@ from core.tools.my_status import Status
 from .. import logger
 
 
+# 服务端和客户端可能共用同一个控制台（客户端拉起服务端时就是如此）。
+# 此时如果两边都画 Rich 动画，两个 Live 会抢同一行、各自 12.5 帧/秒地重画，
+# 互相覆盖，控制台底部一直闪。
+#
+# 规则：控制台的状态行由服务端独占——"正在接收音频"是判断服务端活没活着的
+# 唯一信号，不能丢。客户端那边在有屏幕浮窗时就不画了（见 shortcut/task.py）；
+# 万一浮窗被关掉，客户端会接管控制台，这时通过这个环境变量让服务端让位。
+_NO_CONSOLE_STATUS = os.environ.get('CAPSWRITER_NO_CONSOLE_STATUS', '').strip().lower() in (
+    '1', 'true', 'yes',
+)
+
 # 麦克风接收状态指示器
 status_mic = Status('正在接收音频', spinner='point')
+
+
+def _mic_status(running: bool) -> None:
+    """开关麦克风接收状态动画（客户端接管控制台时不画）"""
+    if _NO_CONSOLE_STATUS:
+        return
+    if running:
+        status_mic.start()
+    else:
+        status_mic.stop()
 
 
 class AudioCache:
@@ -87,7 +109,7 @@ async def message_handler(websocket, msg: AudioMessage, cache: AudioCache, app) 
         if not msg.is_final:
             # 打印状态消息
             if msg.source == 'mic':
-                status_mic.start()
+                _mic_status(True)
             if msg.source == 'file' and is_start:
                 console.print('正在接收音频文件...')
                 logger.info(f"开始接收音频文件，任务ID: {msg.task_id}")
@@ -123,7 +145,7 @@ async def message_handler(websocket, msg: AudioMessage, cache: AudioCache, app) 
         else:  # is_final
             # 打印状态消息
             if msg.source == 'mic':
-                status_mic.stop()
+                _mic_status(False)
             elif msg.source == 'file':
                 print(f'音频文件接收完毕，时长 {cache.total_duration:.2f}s')
                 logger.info(f"音频文件接收完毕，任务ID: {msg.task_id}, 时长: {cache.total_duration:.2f}s")
@@ -201,8 +223,9 @@ async def ws_recv(websocket, app) -> None:
         logger.error(f"WebSocket 接收异常，客户端ID {socket_id}: {e}", exc_info=True)
     finally:
         # 清理资源
-        status_mic.stop()
-        status_mic.on = False
+        if not _NO_CONSOLE_STATUS:
+            status_mic.stop()
+            status_mic.on = False
         sockets.pop(socket_id, None)
         if socket_id in sockets_id:
             sockets_id.remove(socket_id)

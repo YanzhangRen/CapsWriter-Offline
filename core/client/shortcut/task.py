@@ -12,6 +12,7 @@ from threading import Event
 from typing import TYPE_CHECKING, Optional
 
 from . import logger
+from config_client import ClientConfig as Config
 from core.tools.my_status import Status
  
 if TYPE_CHECKING:
@@ -58,6 +59,12 @@ class ShortcutTask:
         # 录音状态动画
         self._status = Status('开始录音', spinner='point')
 
+        # 屏幕底部已经有"录音中"浮窗时，就别再在控制台画动画了：
+        # 服务端那边还画着"正在接收音频"，两边共用一个控制台、各自 12.5 帧/秒
+        # 重画同一行，会互相覆盖，控制台底部一直闪。
+        # 浮窗关掉时客户端接管控制台，改为让服务端让位（见 server_guard.py）。
+        self._console_status = not Config.show_recording_indicator
+
     @property
     def state(self) -> ClientState:
         """快捷访问状态单例"""
@@ -87,8 +94,9 @@ class ShortcutTask:
         # 更新录音状态
         self.state.start_recording(self.recording_start_time)
 
-        # 打印动画：正在录音
-        self._status.start()
+        # 打印动画：正在录音（浮窗开启时让位给服务端，避免抢同一行）
+        if self._console_status:
+            self._status.start()
 
         # 启动识别任务
         recorder = self._get_recorder()
@@ -103,7 +111,8 @@ class ShortcutTask:
 
         self.is_recording = False
         self.state.stop_recording()
-        self._status.stop()
+        if self._console_status:
+            self._status.stop()
 
         self.task.cancel()
         self.task = None
@@ -114,7 +123,8 @@ class ShortcutTask:
 
         self.is_recording = False
         self.state.stop_recording()
-        self._status.stop()
+        if self._console_status:
+            self._status.stop()
 
         asyncio.run_coroutine_threadsafe(
             self.state.queue_in.put({
