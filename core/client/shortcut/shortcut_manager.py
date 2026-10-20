@@ -31,13 +31,21 @@ if TYPE_CHECKING:
 
 
 _user32 = ctypes.windll.user32
+# GetAsyncKeyState 的高位表示"这个键现在还按着"
+_user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+_user32.GetAsyncKeyState.restype = ctypes.c_short
 
 # 前台窗口轮询间隔（秒）
 _FOREGROUND_POLL_INTERVAL = 0.15
 # 两次重装钩子的最小间隔（秒），只用来防止窗口来回抖时反复重装
 _REINSTALL_COOLDOWN = 0.5
-# 按键状态残留多久判定为卡死（秒）
-_STALE_KEY_STATE_TIMEOUT = 3.0
+# 按键物理上已松开、但状态还残留多久判定为卡死（秒）
+_STALE_KEY_STATE_TIMEOUT = 1.0
+# GetAsyncKeyState 返回值里"当前还按着"的那一位
+_KEY_DOWN_BIT = 0x8000
+# 重装钩子前要确认没被按住的键：shift / ctrl / alt / 左win / 右win
+# （0x10、0x11、0x12 是通用虚拟键码，左右两个键都反映在里面）
+_GUARD_VKS = (0x10, 0x11, 0x12, 0x5B, 0x5C)
 
 
 
@@ -76,6 +84,10 @@ class ShortcutManager:
         # _combo_pressed: 组合键 -> 本次按下周期是否已触发
         #   防止按住不放时，持续的 KEYDOWN_REPEAT 重复触发
         self._combo_pressed: Dict[str, bool] = {}
+
+        # _down_mouse_buttons: 当前按下的鼠标侧键
+        #   重装钩子时用来避开"按下和松开之间换钩子"导致松开事件丢失
+        self._down_mouse_buttons: set = set()
 
         # 线程池
         self._pool = ThreadPoolExecutor(max_workers=4)
@@ -235,8 +247,10 @@ class ShortcutManager:
 
             # 处理鼠标事件
             if msg == WM_XBUTTONDOWN:
+                self._down_mouse_buttons.add(button_name)
                 self._event_handler.handle_keydown(button_name, task)
             elif msg == WM_XBUTTONUP:
+                self._down_mouse_buttons.discard(button_name)
                 self._handle_mouse_keyup(button_name, task)
 
             # 阻塞事件
@@ -335,6 +349,52 @@ class ShortcutManager:
 
     # ========== 钩子守护 ==========
 
+    def _any_guard_key_down(self) -> bool:
+        """修饰键/组合键现在有没有被按着（重装钩子前必须确认没有）"""
+        for vk in _GUARD_VKS:
+            if _user32.GetAsyncKeyState(vk) & _KEY_DOWN_BIT:
+                return True
+        return False
+
+    def _any_combo_key_physically_down(self) -> bool:
+        """
+        当前记录的组合键里，还有没有物理上没松开的。
+
+        查不到虚拟键码时一律按"还按着"处理：宁可状态残留不自动清理（老样子，
+        等用户再按一次），也绝不能把用户正常的长按误判成残留 —— 那会让录音
+        停不下来，比残留本身严重得多。
+        """
+        for name in list(self._pressed_keys):
+            vk = KeyMapper.name_to_vk(name)
+            if vk is None:
+                return True
+            if _user32.GetAsyncKeyState(vk) & _KEY_DOWN_BIT:
+                return True
+        return False
+
+    def _release_stuck_combos(self) -> None:
+        """
+        组合键状态卡住时，强制走一次释放。
+
+        正常情况下 keyup 会把 _combo_pressed 清掉并结束录音；但如果 keyup 丢了
+        （比如重装钩子正好卡在按下和松开之间），_combo_pressed 会一直是 True，
+        录音就停不下来了 —— 表现是"松开后还在录音，再按一下才停"。
+
+        这里补一次释放，把卡住的录音正常收尾（该出的字照样出）。
+        """
+        for combo, pressed in list(self._combo_pressed.items()):
+            if not pressed:
+                continue
+            task = self.tasks.get(combo)
+            if task is None:
+                continue
+            self._combo_pressed[combo] = False
+            try:
+                self._event_handler.handle_keyup(combo, task)
+            except Exception as e:
+                logger.debug(f'强制释放组合键 {combo} 失败: {e}')
+        self._pressed_keys.clear()
+
     def _reinstall_hooks(self) -> bool:
         """
         重新安装键盘/鼠标钩子，把自己挪回钩子链的最前面。
@@ -397,21 +457,33 @@ class ShortcutManager:
                     pending = True
 
                 if self._pressed_keys:
-                    # 按键还按着的时候不能换钩子：换掉之后收不到 keyup，
-                    # 组合键状态会卡死（_combo_pressed 一直是 True）。
-                    if not stale_since:
-                        stale_since = now
-                    elif now - stale_since > _STALE_KEY_STATE_TIMEOUT:
-                        # 按键状态明显残留（多半是换钩子时漏掉了 keyup），清掉重来
-                        logger.debug('按键状态残留，清空后重新安装钩子')
-                        self._pressed_keys.clear()
-                        self._combo_pressed.clear()
+                    # 关键：光看事件流判断不了"用户还在按"还是"状态卡住了"。
+                    # 用户按住说话可能好几秒，这时候状态"没变"是正常的，
+                    # 之前用固定 3 秒定时器去清理，结果把用户正常的长按也当成
+                    # 残留给清掉了 —— 组合键状态一清，松手时的释放就被忽略，
+                    # 录音停不下来，得再按一下才停。
+                    # 现在改成问 Windows 物理状态：键还按着就是正常，不动它。
+                    if self._any_combo_key_physically_down():
                         stale_since = 0.0
-                        pending = True
+                    else:
+                        # 物理上确实已经松开了，但状态还挂着 → keyup 丢了
+                        if not stale_since:
+                            stale_since = now
+                        elif now - stale_since > _STALE_KEY_STATE_TIMEOUT:
+                            logger.debug('按键状态残留（物理上已松开），强制结束组合键')
+                            self._release_stuck_combos()
+                            stale_since = 0.0
+                            pending = True
                 else:
                     stale_since = 0.0
 
-                if pending and not self._pressed_keys and now - last_reinstall >= _REINSTALL_COOLDOWN:
+                # 重装钩子必须避开"按下和松开之间"：这段时间换钩子会漏掉 keyup，
+                # 组合键就再也结束不了，录音会一直挂着。
+                if (pending
+                        and not self._pressed_keys
+                        and not self._down_mouse_buttons
+                        and not self._any_guard_key_down()
+                        and now - last_reinstall >= _REINSTALL_COOLDOWN):
                     if self._reinstall_hooks():
                         pending = False
                         last_reinstall = time.time()

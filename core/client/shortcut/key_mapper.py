@@ -5,6 +5,8 @@
 处理按键名称和虚拟键码之间的转换，以及相关常量定义
 """
 
+from typing import Optional
+
 from pynput import keyboard
 from pynput._util.win32 import KeyTranslator
 from . import logger
@@ -105,6 +107,32 @@ class KeyMapper:
 
         # 未知键码，返回 vk_ 格式
         return f'vk_{vk}'
+
+    @staticmethod
+    def name_to_vk(key_name: str) -> Optional[int]:
+        """
+        将按键名称转换为虚拟键码（vk_to_name 的反查）
+
+        用途：配合 GetAsyncKeyState 判断某个键**物理上**是否还按着。
+        钩子里的 keyup 事件有可能因为重装钩子而丢失，光看事件流判断不出
+        "用户还在按着"还是"状态卡住了"，只能问 Windows 物理层。
+
+        Args:
+            key_name: 按键名称
+
+        Returns:
+            虚拟键码；无法转换时返回 None
+        """
+        special = KeyMapper._get_special_key_objects()
+        key = special.get(key_name)
+        if key is not None:
+            return getattr(key.value, 'vk', None)
+
+        # 单个字符按键：字母、数字的虚拟键码就是其 ASCII 码
+        if len(key_name) == 1:
+            return ord(key_name.upper())
+
+        return None
 
     @staticmethod
     def name_to_key(key_name: str):
