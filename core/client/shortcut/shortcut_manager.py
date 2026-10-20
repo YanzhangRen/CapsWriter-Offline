@@ -9,6 +9,8 @@
 4. hold_mode 和 click_mode 支持
 """
 from __future__ import annotations
+import ctypes
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Dict, List, Optional
@@ -26,6 +28,16 @@ if TYPE_CHECKING:
     from core.client.shortcut.shortcut_config import Shortcut
     from core.client.state import ClientState
     from core.client.app import CapsWriterClient
+
+
+_user32 = ctypes.windll.user32
+
+# 前台窗口轮询间隔（秒）
+_FOREGROUND_POLL_INTERVAL = 0.15
+# 两次重装钩子的最小间隔（秒），只用来防止窗口来回抖时反复重装
+_REINSTALL_COOLDOWN = 0.5
+# 按键状态残留多久判定为卡死（秒）
+_STALE_KEY_STATE_TIMEOUT = 3.0
 
 
 
@@ -67,6 +79,10 @@ class ShortcutManager:
 
         # 线程池
         self._pool = ThreadPoolExecutor(max_workers=4)
+
+        # 钩子守护线程：前台窗口切换时重新安装钩子
+        self._hook_watch_stop = threading.Event()
+        self._hook_watch_thread: Optional[threading.Thread] = None
 
         # 按键模拟器
         self._emulator = ShortcutEmulator()
@@ -317,6 +333,93 @@ class ShortcutManager:
 
         return True  # 放行
 
+    # ========== 钩子守护 ==========
+
+    def _reinstall_hooks(self) -> bool:
+        """
+        重新安装键盘/鼠标钩子，把自己挪回钩子链的最前面。
+
+        背景：低级键盘钩子（WH_KEYBOARD_LL）是全局链式调用的，**后装的钩子
+        排在链前面**，前面的钩子可以把事件吞掉（返回非 0 表示"已处理"），
+        链就断在那里，后面早先装上的钩子根本收不到按键。
+
+        实测：某个以管理员权限运行的终端进程自己也装了低级钩子，它启动时间
+        比客户端晚，装在链前面把按键吞了 —— 表现就是"在那个管理员窗口里按
+        快捷键完全没反应，换到普通窗口又正常"，客户端日志里一条按键记录都没有。
+        重启客户端后（钩子变成链里最新的）就恢复正常了。
+
+        所以这里监听前台窗口变化：切到别的程序时重新装一次钩子，把自己顶回
+        链首，问题就没了。
+        """
+        try:
+            if self.keyboard_listener is not None:
+                try:
+                    self.keyboard_listener.stop()
+                except Exception:
+                    pass
+                self.keyboard_listener = keyboard.Listener(
+                    win32_event_filter=self.create_keyboard_filter()
+                )
+                self.keyboard_listener.start()
+
+            if self.mouse_listener is not None:
+                try:
+                    self.mouse_listener.stop()
+                except Exception:
+                    pass
+                self.mouse_listener = mouse.Listener(
+                    win32_event_filter=self.create_mouse_filter()
+                )
+                self.mouse_listener.start()
+
+            logger.debug('已重新安装钩子，回到钩子链最前面')
+            return True
+        except Exception as e:
+            logger.warning(f'重新安装钩子失败: {e}')
+            return False
+
+    def _watch_foreground(self) -> None:
+        """监听前台窗口变化，变化后重新安装钩子"""
+        last_seen = 0
+        last_reinstall = 0.0
+        pending = False
+        stale_since = 0.0
+
+        while not self._hook_watch_stop.is_set():
+            try:
+                now = time.time()
+                hwnd = _user32.GetForegroundWindow()
+                # 取根窗口：子窗口、提示气泡之类的变化不算切换应用
+                root = (_user32.GetAncestor(hwnd, 2) or hwnd) if hwnd else 0
+
+                if root != last_seen:
+                    last_seen = root
+                    pending = True
+
+                if self._pressed_keys:
+                    # 按键还按着的时候不能换钩子：换掉之后收不到 keyup，
+                    # 组合键状态会卡死（_combo_pressed 一直是 True）。
+                    if not stale_since:
+                        stale_since = now
+                    elif now - stale_since > _STALE_KEY_STATE_TIMEOUT:
+                        # 按键状态明显残留（多半是换钩子时漏掉了 keyup），清掉重来
+                        logger.debug('按键状态残留，清空后重新安装钩子')
+                        self._pressed_keys.clear()
+                        self._combo_pressed.clear()
+                        stale_since = 0.0
+                        pending = True
+                else:
+                    stale_since = 0.0
+
+                if pending and not self._pressed_keys and now - last_reinstall >= _REINSTALL_COOLDOWN:
+                    if self._reinstall_hooks():
+                        pending = False
+                        last_reinstall = time.time()
+            except Exception as e:
+                logger.debug(f'钩子守护线程异常: {e}')
+
+            self._hook_watch_stop.wait(_FOREGROUND_POLL_INTERVAL)
+
     # ========== 公共接口 ==========
 
     def start(self) -> None:
@@ -351,8 +454,26 @@ class ShortcutManager:
                 toggle = "可恢复" if shortcut.is_toggle_key() else "普通键"
                 logger.info(f"  [{shortcut.key}] {mode}模式, 阻塞:{shortcut.suppress}, {toggle}")
 
+        # 启动钩子守护线程
+        self._hook_watch_stop.clear()
+        if self._hook_watch_thread is None or not self._hook_watch_thread.is_alive():
+            self._hook_watch_thread = threading.Thread(
+                target=self._watch_foreground, name='HookWatch', daemon=True
+            )
+            self._hook_watch_thread.start()
+            logger.info('钩子守护已启用（前台窗口切换时自动重装钩子）')
+
     def stop(self) -> None:
         """停止所有监听器和清理资源"""
+        # 停掉钩子守护线程
+        self._hook_watch_stop.set()
+        if self._hook_watch_thread is not None:
+            try:
+                self._hook_watch_thread.join(timeout=1.0)
+            except Exception:
+                pass
+            self._hook_watch_thread = None
+
         if self.keyboard_listener:
             try:
                 self.keyboard_listener.stop()
